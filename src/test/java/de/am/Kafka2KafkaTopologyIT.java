@@ -1,8 +1,13 @@
 package de.am;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.I0Itec.zkclient.ZkClient;
 import org.junit.After;
 import org.junit.AfterClass;
@@ -10,6 +15,13 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import kafka.admin.TopicCommand;
+import kafka.consumer.ConsumerConfig;
+import kafka.consumer.ConsumerIterator;
+import kafka.consumer.KafkaStream;
+import kafka.javaapi.consumer.ConsumerConnector;
+import kafka.producer.KeyedMessage;
+import kafka.producer.Producer;
+import kafka.producer.ProducerConfig;
 import kafka.server.KafkaConfig;
 import kafka.server.KafkaServer;
 import kafka.utils.MockTime;
@@ -33,6 +45,9 @@ public class Kafka2KafkaTopologyIT {
     private static EmbeddedZookeeper zkServer;
     private static ZkClient zkClient;
     private static KafkaServer kafkaServer;
+    private static Producer producer;
+    private static ConsumerConnector consumer;
+
 
     @BeforeClass
     public static void setUp() throws Exception {
@@ -62,6 +77,14 @@ public class Kafka2KafkaTopologyIT {
         TestUtils.waitUntilMetadataIsPropagated(scala.collection.JavaConversions.asScalaBuffer(servers), TOPIC_IN, 0, 5000);
         TestUtils.waitUntilMetadataIsPropagated(scala.collection.JavaConversions.asScalaBuffer(servers), TOPIC_OUT, 0, 5000);
 
+        // setup producer
+        Properties properties = TestUtils.getProducerConfig("localhost:" + port);
+        ProducerConfig producerConfig = new ProducerConfig(properties);
+        producer = new Producer(producerConfig);
+
+        // setup simple consumer (waiting 10 seconds for a message to arrive)
+        Properties consumerProperties = TestUtils.createConsumerProperties(zkServer.connectString(), "group0", "consumer0", 30000);
+        consumer = kafka.consumer.Consumer.createJavaConsumerConnector(new ConsumerConfig(consumerProperties));
     }
 
 
@@ -69,6 +92,7 @@ public class Kafka2KafkaTopologyIT {
     public static void tearDown() throws Exception {
 
         kafkaServer.shutdown();
+        kafkaServer.awaitShutdown();
         zkClient.close();
         zkServer.shutdown();
 
@@ -78,9 +102,55 @@ public class Kafka2KafkaTopologyIT {
     @Test
     public void testMain() throws Exception {
 
-        String brokerConnection = kafkaServer.config().advertisedHostName() + ":" + kafkaServer.config().advertisedPort();
+        final String brokerConnection = kafkaServer.config().advertisedHostName() + ":" + kafkaServer.config().advertisedPort();
 
-        Kafka2KafkaTopology.main(new String[]{zkConnect, brokerConnection});
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        executor.submit(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // run topology
+                    Kafka2KafkaTopology.main(new String[]{zkConnect, brokerConnection});
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        });
 
+        // wait for topology to be loaded
+        Thread.sleep(30000);
+
+        // send message
+        KeyedMessage<Integer, byte[]> data = new KeyedMessage(TOPIC_IN, "test-message".getBytes(StandardCharsets.UTF_8));
+
+        List<KeyedMessage> messages = new ArrayList<KeyedMessage>();
+        messages.add(data);
+
+        producer.send(scala.collection.JavaConversions.asScalaBuffer(messages));
+        producer.close();
+
+        // deleting zookeeper information to make sure the consumer starts from the beginning
+        // see https://stackoverflow.com/questions/14935755/how-to-get-data-from-old-offset-point-in-kafka
+        zkClient.delete("/consumers/group0");
+
+        // start consumer
+        Map<String, Integer> topicCountMap = new HashMap<String, Integer>();
+        topicCountMap.put(TOPIC_OUT, 1);
+        Map<String, List<KafkaStream<byte[], byte[]>>> consumerMap = consumer.createMessageStreams(topicCountMap);
+        KafkaStream<byte[], byte[]> stream = consumerMap.get(TOPIC_OUT).get(0);
+        ConsumerIterator<byte[], byte[]> iterator = stream.iterator();
+
+        if(iterator.hasNext()) {
+            String msg = new String(iterator.next().message(), StandardCharsets.UTF_8);
+            System.out.println("Kafka consumer received message: " +msg);
+            assertEquals("test-message", msg);
+        } else {
+            fail();
+        }
+
+        consumer.shutdown();
+        // wait for topology to finish
+        Thread.sleep(30000);
+        executor.shutdown();
     }
 }

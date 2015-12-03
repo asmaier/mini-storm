@@ -1,12 +1,20 @@
 package de.am;
 
+import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import backtype.storm.Config;
 import backtype.storm.LocalCluster;
 import backtype.storm.StormSubmitter;
 import backtype.storm.spout.SchemeAsMultiScheme;
+import backtype.storm.task.OutputCollector;
+import backtype.storm.task.TopologyContext;
+import backtype.storm.topology.OutputFieldsDeclarer;
 import backtype.storm.topology.TopologyBuilder;
+import backtype.storm.topology.base.BaseRichBolt;
+import backtype.storm.tuple.Fields;
+import backtype.storm.tuple.Tuple;
+import backtype.storm.tuple.Values;
 import backtype.storm.utils.Utils;
 import storm.kafka.BrokerHosts;
 import storm.kafka.KafkaSpout;
@@ -24,6 +32,30 @@ public class Kafka2KafkaTopology {
 
     private static final String TOPIC_IN = "input";
     private static final String TOPIC_OUT = "output";
+
+    // The Kafka Bolt needs a key to each message. That is why we need this Bolt.
+    public static class GenerateKafkaKeyBolt extends BaseRichBolt {
+        OutputCollector collector;
+
+        @Override
+        public void prepare(Map conf, TopologyContext context, OutputCollector collector) {
+            this.collector = collector;
+        }
+
+        @Override
+        public void execute(Tuple tuple) {
+
+            System.out.println("Topology received kafka message: " + tuple.getString(0));
+
+            collector.emit(tuple, new Values(UUID.randomUUID().toString(), tuple.getString(0)));
+            collector.ack(tuple);
+        }
+
+        @Override
+        public void declareOutputFields(OutputFieldsDeclarer declarer) {
+            declarer.declare(new Fields(FieldNameBasedTupleToKafkaMapper.BOLT_KEY, FieldNameBasedTupleToKafkaMapper.BOLT_MESSAGE));
+        }
+    }
 
     public static void main(String[] args) throws Exception {
 
@@ -49,7 +81,8 @@ public class Kafka2KafkaTopology {
 
         TopologyBuilder builder = new TopologyBuilder();
         builder.setSpout("kafkaSpout", kafkaSpout);
-        builder.setBolt("kafkaBolt", bolt).shuffleGrouping("kafkaSpout");
+        builder.setBolt("kafkaKey", new GenerateKafkaKeyBolt()).shuffleGrouping("kafkaSpout");
+        builder.setBolt("kafkaBolt", bolt).shuffleGrouping("kafkaKey");
 
         if (args.length > 2) {
             StormSubmitter.submitTopologyWithProgressBar(args[1], conf, builder.createTopology());
@@ -57,8 +90,9 @@ public class Kafka2KafkaTopology {
         else {
 
             LocalCluster cluster = new LocalCluster();
+            conf.setDebug(true);
             cluster.submitTopology("test", conf, builder.createTopology());
-            Utils.sleep(10000);
+            Utils.sleep(40000);
             cluster.killTopology("test");
             cluster.shutdown();
         }
