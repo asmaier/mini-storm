@@ -30,6 +30,10 @@ import storm.kafka.bolt.selector.DefaultTopicSelector;
  */
 public class Kafka2KafkaTopology {
 
+    // if you change this ID the Kafka Spout will not know, where it stopped reading from the topic and fall back to
+    // the setting of spoutConfig.startOffsetTime, which by default will reread all messages from the beginning of the topic.
+    private static final String KAFKA_CONSUMER_ID = "Kafka2KafkaTopology";
+
     private static final String TOPIC_IN = "input";
     private static final String TOPIC_OUT = "output";
 
@@ -63,8 +67,12 @@ public class Kafka2KafkaTopology {
         String kafkaBroker = args[1];
 
         BrokerHosts hosts = new ZkHosts(zkConnString);
-        SpoutConfig spoutConfig = new SpoutConfig(hosts, TOPIC_IN, "/" + TOPIC_IN, UUID.randomUUID().toString());
+        SpoutConfig spoutConfig = new SpoutConfig(hosts, TOPIC_IN, "/" + TOPIC_IN, KAFKA_CONSUMER_ID);
         spoutConfig.scheme = new SchemeAsMultiScheme(new StringScheme());
+        // Unfortunately the default for startOffsetTime is OffsetRequest.EarliestTime(), so we need to change this here,
+        // to make sure we don't read the whole topic the first time we are starting the topology.
+        spoutConfig.startOffsetTime = kafka.api.OffsetRequest.LatestTime();
+
         KafkaSpout kafkaSpout = new KafkaSpout(spoutConfig);
 
         KafkaBolt bolt = new KafkaBolt()
@@ -92,7 +100,7 @@ public class Kafka2KafkaTopology {
             LocalCluster cluster = new LocalCluster();
             conf.setDebug(true);
             cluster.submitTopology("test", conf, builder.createTopology());
-            Utils.sleep(40000);
+            Utils.sleep(50000);
             cluster.killTopology("test");
             cluster.shutdown();
         }

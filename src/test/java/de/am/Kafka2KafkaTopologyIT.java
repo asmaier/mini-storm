@@ -17,6 +17,7 @@ import org.junit.Test;
 import kafka.admin.TopicCommand;
 import kafka.consumer.ConsumerConfig;
 import kafka.consumer.ConsumerIterator;
+import kafka.consumer.ConsumerTimeoutException;
 import kafka.consumer.KafkaStream;
 import kafka.javaapi.consumer.ConsumerConnector;
 import kafka.producer.KeyedMessage;
@@ -104,6 +105,12 @@ public class Kafka2KafkaTopologyIT {
 
         final String brokerConnection = kafkaServer.config().advertisedHostName() + ":" + kafkaServer.config().advertisedPort();
 
+        // send message (it should be ignored, because it has been sent before the topology started)
+        KeyedMessage<Integer, byte[]> data1 = new KeyedMessage(TOPIC_IN, "test-message-ignore".getBytes(StandardCharsets.UTF_8));
+        List<KeyedMessage> messages1 = new ArrayList<>();
+        messages1.add(data1);
+        producer.send(scala.collection.JavaConversions.asScalaBuffer(messages1));
+
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.submit(new Runnable() {
             @Override
@@ -118,20 +125,15 @@ public class Kafka2KafkaTopologyIT {
         });
 
         // wait for topology to be loaded
-        Thread.sleep(30000);
+        Thread.sleep(45000);
 
         // send message
-        KeyedMessage<Integer, byte[]> data = new KeyedMessage(TOPIC_IN, "test-message".getBytes(StandardCharsets.UTF_8));
+        KeyedMessage<Integer, byte[]> data2 = new KeyedMessage(TOPIC_IN, "test-message".getBytes(StandardCharsets.UTF_8));
+        List<KeyedMessage> messages2 = new ArrayList<>();
+        messages2.add(data2);
+        producer.send(scala.collection.JavaConversions.asScalaBuffer(messages2));
 
-        List<KeyedMessage> messages = new ArrayList<KeyedMessage>();
-        messages.add(data);
-
-        producer.send(scala.collection.JavaConversions.asScalaBuffer(messages));
         producer.close();
-
-        // deleting zookeeper information to make sure the consumer starts from the beginning
-        // see https://stackoverflow.com/questions/14935755/how-to-get-data-from-old-offset-point-in-kafka
-        zkClient.delete("/consumers/group0");
 
         // start consumer
         Map<String, Integer> topicCountMap = new HashMap<String, Integer>();
@@ -142,15 +144,13 @@ public class Kafka2KafkaTopologyIT {
 
         if(iterator.hasNext()) {
             String msg = new String(iterator.next().message(), StandardCharsets.UTF_8);
-            System.out.println("Kafka consumer received message: " +msg);
+            System.out.println("Kafka consumer received message: " + msg);
             assertEquals("test-message", msg);
         } else {
             fail();
         }
 
         consumer.shutdown();
-        // wait for topology to finish
-        Thread.sleep(30000);
         executor.shutdown();
     }
 }
