@@ -135,7 +135,7 @@ public class Kafka2KafkaTopologyIT {
 
         producer.close();
 
-        // start consumer
+        // start consumer (see https://cwiki.apache.org/confluence/display/KAFKA/Consumer+Group+Example)
         Map<String, Integer> topicCountMap = new HashMap<String, Integer>();
         topicCountMap.put(TOPIC_OUT, 1);
         Map<String, List<KafkaStream<byte[], byte[]>>> consumerMap = consumer.createMessageStreams(topicCountMap);
