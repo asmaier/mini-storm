@@ -1,35 +1,32 @@
 package de.am;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.I0Itec.zkclient.ZkClient;
-import org.junit.After;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.AfterClass;
-import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import kafka.admin.TopicCommand;
-import kafka.consumer.ConsumerConfig;
-import kafka.consumer.ConsumerIterator;
-import kafka.consumer.ConsumerTimeoutException;
-import kafka.consumer.KafkaStream;
-import kafka.javaapi.consumer.ConsumerConnector;
-import kafka.producer.KeyedMessage;
-import kafka.producer.Producer;
-import kafka.producer.ProducerConfig;
+import kafka.admin.AdminUtils;
+import kafka.admin.RackAwareMode;
 import kafka.server.KafkaConfig;
 import kafka.server.KafkaServer;
 import kafka.utils.MockTime;
 import kafka.utils.TestUtils;
-import kafka.utils.TestZKUtils;
 import kafka.utils.Time;
 import kafka.utils.ZKStringSerializer$;
+import kafka.utils.ZkUtils;
 import kafka.zk.EmbeddedZookeeper;
 import static org.junit.Assert.*;
 
@@ -38,40 +35,44 @@ import static org.junit.Assert.*;
  */
 public class Kafka2KafkaTopologyIT {
 
+    private static final String ZKHOST = "127.0.0.1";
+    private static final String KAFKAHOST = "127.0.0.1";
+    private static final String KAFKAPORT = "9092";
     private static final String TOPIC_IN = "input";
     private static final String TOPIC_OUT = "output";
-    private static final int BROKER_ID = 0;
+    private static final String BROKER_ID = "0";
 
     private static String zkConnect;
     private static EmbeddedZookeeper zkServer;
     private static ZkClient zkClient;
     private static KafkaServer kafkaServer;
-    private static Producer producer;
-    private static ConsumerConnector consumer;
+    private static KafkaProducer<Integer, byte[]> producer;
+    private static KafkaConsumer<String, String> consumer;
 
 
     @BeforeClass
     public static void setUp() throws Exception {
 
         // setup Zookeeper
-        zkConnect = TestZKUtils.zookeeperConnect();
-        zkServer = new EmbeddedZookeeper(zkConnect);
-        zkClient = new ZkClient(zkServer.connectString(), 30000, 30000, ZKStringSerializer$.MODULE$);
+        zkServer = new EmbeddedZookeeper();
+        zkConnect = ZKHOST + ":" +zkServer.port();
+        zkClient = new ZkClient(zkConnect, 30000, 30000, ZKStringSerializer$.MODULE$);
+        ZkUtils zkUtils = ZkUtils.apply(zkClient, false);
 
         // setup Broker
-        int port = TestUtils.choosePort();
-        Properties props = TestUtils.createBrokerConfig(BROKER_ID, port, true);
-
-        KafkaConfig config = new KafkaConfig(props);
+        Properties brokerProps = new Properties();
+        brokerProps.setProperty("zookeeper.connect", zkConnect);
+        brokerProps.setProperty("broker.id", BROKER_ID);
+        brokerProps.setProperty("log.dirs", Files.createTempDirectory("kafka-").toAbsolutePath().toString());
+        brokerProps.setProperty("advertised.host.name", KAFKAHOST);
+        brokerProps.setProperty("listeners", "PLAINTEXT://" + KAFKAHOST +":" + KAFKAPORT);
+        KafkaConfig config = new KafkaConfig(brokerProps);
         Time mock = new MockTime();
         kafkaServer = TestUtils.createServer(config, mock);
 
         // create topic
-        String [] argumentsIn = new String[]{"--topic", TOPIC_IN, "--partitions", "1","--replication-factor", "1"};
-        TopicCommand.createTopic(zkClient, new TopicCommand.TopicCommandOptions(argumentsIn));
-
-        String [] argumentsOut = new String[]{"--topic", TOPIC_OUT, "--partitions", "1","--replication-factor", "1"};
-        TopicCommand.createTopic(zkClient, new TopicCommand.TopicCommandOptions(argumentsOut));
+        AdminUtils.createTopic(zkUtils, TOPIC_IN, 1, 1, new Properties(), RackAwareMode.Disabled$.MODULE$);
+        AdminUtils.createTopic(zkUtils, TOPIC_OUT, 1, 1, new Properties(), RackAwareMode.Disabled$.MODULE$);
 
         List<KafkaServer> servers = new ArrayList<KafkaServer>();
         servers.add(kafkaServer);
@@ -79,13 +80,23 @@ public class Kafka2KafkaTopologyIT {
         TestUtils.waitUntilMetadataIsPropagated(scala.collection.JavaConversions.asScalaBuffer(servers), TOPIC_OUT, 0, 5000);
 
         // setup producer
-        Properties properties = TestUtils.getProducerConfig("localhost:" + port);
-        ProducerConfig producerConfig = new ProducerConfig(properties);
-        producer = new Producer(producerConfig);
+        Properties producerProps = new Properties();
+        producerProps.setProperty("bootstrap.servers", KAFKAHOST + ":" + KAFKAPORT);
+        producerProps.setProperty("key.serializer","org.apache.kafka.common.serialization.IntegerSerializer");
+        producerProps.setProperty("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
+        producer = new KafkaProducer<>(producerProps);
 
-        // setup simple consumer (waiting 10 seconds for a message to arrive)
-        Properties consumerProperties = TestUtils.createConsumerProperties(zkServer.connectString(), "group0", "consumer0", 30000);
-        consumer = kafka.consumer.Consumer.createJavaConsumerConnector(new ConsumerConfig(consumerProperties));
+        // setup consumer
+        Properties consumerProps = new Properties();
+        consumerProps.setProperty("bootstrap.servers", KAFKAHOST + ":" + KAFKAPORT);
+        consumerProps.setProperty("group.id", "group0");
+        consumerProps.setProperty("client.id", "consumer0");
+        consumerProps.setProperty("key.deserializer","org.apache.kafka.common.serialization.StringDeserializer");
+        consumerProps.setProperty("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+        consumerProps.put("auto.offset.reset", "earliest");  // to make sure the consumer starts from the beginning of the topic
+        consumer = new KafkaConsumer<>(consumerProps);
+        consumer.subscribe(Arrays.asList(TOPIC_OUT));
+
     }
 
 
@@ -106,10 +117,9 @@ public class Kafka2KafkaTopologyIT {
         final String brokerConnection = kafkaServer.config().advertisedHostName() + ":" + kafkaServer.config().advertisedPort();
 
         // send message (it should be ignored, because it has been sent before the topology started)
-        KeyedMessage<Integer, byte[]> data1 = new KeyedMessage(TOPIC_IN, "test-message-ignore".getBytes(StandardCharsets.UTF_8));
-        List<KeyedMessage> messages1 = new ArrayList<>();
-        messages1.add(data1);
-        producer.send(scala.collection.JavaConversions.asScalaBuffer(messages1));
+        ProducerRecord<Integer, byte[]> data = new ProducerRecord<>(TOPIC_IN, "test-message-ignore".getBytes(StandardCharsets.UTF_8));
+        producer.send(data);
+        Thread.sleep(10000);
 
         ExecutorService executor = Executors.newSingleThreadExecutor();
         executor.submit(new Runnable() {
@@ -125,32 +135,25 @@ public class Kafka2KafkaTopologyIT {
         });
 
         // wait for topology to be loaded
-        Thread.sleep(45000);
+        Thread.sleep(35000);
 
         // send message
-        KeyedMessage<Integer, byte[]> data2 = new KeyedMessage(TOPIC_IN, "test-message".getBytes(StandardCharsets.UTF_8));
-        List<KeyedMessage> messages2 = new ArrayList<>();
-        messages2.add(data2);
-        producer.send(scala.collection.JavaConversions.asScalaBuffer(messages2));
-
+        ProducerRecord<Integer, byte[]> data2 = new ProducerRecord<>(TOPIC_IN, "test-message".getBytes(StandardCharsets.UTF_8));
+        producer.send(data2);
         producer.close();
 
-        // start consumer (see https://cwiki.apache.org/confluence/display/KAFKA/Consumer+Group+Example)
-        Map<String, Integer> topicCountMap = new HashMap<String, Integer>();
-        topicCountMap.put(TOPIC_OUT, 1);
-        Map<String, List<KafkaStream<byte[], byte[]>>> consumerMap = consumer.createMessageStreams(topicCountMap);
-        KafkaStream<byte[], byte[]> stream = consumerMap.get(TOPIC_OUT).get(0);
-        ConsumerIterator<byte[], byte[]> iterator = stream.iterator();
+        // start consumer
+        ConsumerRecords<String, String> records = consumer.poll(10000);
+        assertEquals(1, records.count());
 
-        if(iterator.hasNext()) {
-            String msg = new String(iterator.next().message(), StandardCharsets.UTF_8);
-            System.out.println("Kafka consumer received message: " + msg);
-            assertEquals("test-message", msg);
-        } else {
-            fail();
-        }
+        Iterator<ConsumerRecord<String, String>> recordIterator = records.iterator();
+        ConsumerRecord<String, String> record = recordIterator.next();
+        String msg = record.value();
+        System.out.println("Kafka consumer received message: " + msg);
+        assertEquals("test-message", msg);
 
-        consumer.shutdown();
+        // wait until the topology and the storm cluster have been stopped
+        Thread.sleep(20000);
         executor.shutdown();
     }
 }

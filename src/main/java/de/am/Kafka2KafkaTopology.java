@@ -3,27 +3,27 @@ package de.am;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
-import backtype.storm.Config;
-import backtype.storm.LocalCluster;
-import backtype.storm.StormSubmitter;
-import backtype.storm.spout.SchemeAsMultiScheme;
-import backtype.storm.task.OutputCollector;
-import backtype.storm.task.TopologyContext;
-import backtype.storm.topology.OutputFieldsDeclarer;
-import backtype.storm.topology.TopologyBuilder;
-import backtype.storm.topology.base.BaseRichBolt;
-import backtype.storm.tuple.Fields;
-import backtype.storm.tuple.Tuple;
-import backtype.storm.tuple.Values;
-import backtype.storm.utils.Utils;
-import storm.kafka.BrokerHosts;
-import storm.kafka.KafkaSpout;
-import storm.kafka.SpoutConfig;
-import storm.kafka.StringScheme;
-import storm.kafka.ZkHosts;
-import storm.kafka.bolt.KafkaBolt;
-import storm.kafka.bolt.mapper.FieldNameBasedTupleToKafkaMapper;
-import storm.kafka.bolt.selector.DefaultTopicSelector;
+import org.apache.storm.Config;
+import org.apache.storm.LocalCluster;
+import org.apache.storm.StormSubmitter;
+import org.apache.storm.kafka.BrokerHosts;
+import org.apache.storm.kafka.KafkaSpout;
+import org.apache.storm.kafka.SpoutConfig;
+import org.apache.storm.kafka.StringScheme;
+import org.apache.storm.kafka.ZkHosts;
+import org.apache.storm.kafka.bolt.KafkaBolt;
+import org.apache.storm.kafka.bolt.mapper.FieldNameBasedTupleToKafkaMapper;
+import org.apache.storm.kafka.bolt.selector.DefaultTopicSelector;
+import org.apache.storm.spout.SchemeAsMultiScheme;
+import org.apache.storm.task.OutputCollector;
+import org.apache.storm.task.TopologyContext;
+import org.apache.storm.topology.OutputFieldsDeclarer;
+import org.apache.storm.topology.TopologyBuilder;
+import org.apache.storm.topology.base.BaseRichBolt;
+import org.apache.storm.tuple.Fields;
+import org.apache.storm.tuple.Tuple;
+import org.apache.storm.tuple.Values;
+import org.apache.storm.utils.Utils;
 
 /**
  * Created by andreas.maier on 27.11.15.
@@ -75,22 +75,24 @@ public class Kafka2KafkaTopology {
 
         KafkaSpout kafkaSpout = new KafkaSpout(spoutConfig);
 
-        KafkaBolt bolt = new KafkaBolt()
-                .withTopicSelector(new DefaultTopicSelector(TOPIC_OUT))
-                .withTupleToKafkaMapper(new FieldNameBasedTupleToKafkaMapper());
-
-        Config conf = new Config();
         //set producer properties.
         Properties props = new Properties();
-        props.put("metadata.broker.list", kafkaBroker);
-        props.put("request.required.acks", "1");
-        props.put("serializer.class", "kafka.serializer.StringEncoder");
-        conf.put(KafkaBolt.KAFKA_BROKER_PROPERTIES, props);
+        props.put("bootstrap.servers", kafkaBroker);
+        props.put("acks", "1");
+        props.setProperty("key.serializer","org.apache.kafka.common.serialization.StringSerializer");
+        props.setProperty("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+
+        KafkaBolt bolt = new KafkaBolt()
+                .withTopicSelector(new DefaultTopicSelector(TOPIC_OUT))
+                .withTupleToKafkaMapper(new FieldNameBasedTupleToKafkaMapper())
+                .withProducerProperties(props);
 
         TopologyBuilder builder = new TopologyBuilder();
         builder.setSpout("kafkaSpout", kafkaSpout);
         builder.setBolt("kafkaKey", new GenerateKafkaKeyBolt()).shuffleGrouping("kafkaSpout");
         builder.setBolt("kafkaBolt", bolt).shuffleGrouping("kafkaKey");
+
+        Config conf = new Config();
 
         if (args.length > 2) {
             StormSubmitter.submitTopologyWithProgressBar(args[1], conf, builder.createTopology());
@@ -100,8 +102,9 @@ public class Kafka2KafkaTopology {
             LocalCluster cluster = new LocalCluster();
             conf.setDebug(true);
             cluster.submitTopology("test", conf, builder.createTopology());
-            Utils.sleep(50000);
+            Utils.sleep(40000);
             cluster.killTopology("test");
+            Utils.sleep(10000);
             cluster.shutdown();
         }
     }
