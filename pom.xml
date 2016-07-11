@@ -79,6 +79,7 @@
       <groupId>com.datastax.cassandra</groupId>
       <artifactId>cassandra-driver-core</artifactId>
       <version>3.0.0</version>
+      <!-- HBase integration test doesn't work with Guava 18. To make it run comment out the exclusion here -->
       <exclusions>
         <exclusion>
           <groupId>com.google.guava</groupId>
@@ -87,6 +88,7 @@
       </exclusions>
     </dependency>
 
+    <!-- HBase integration test doesn't work with Guava 18. To make it run comment out the dependency here -->
     <dependency>
       <groupId>com.google.guava</groupId>
       <artifactId>guava</artifactId>
