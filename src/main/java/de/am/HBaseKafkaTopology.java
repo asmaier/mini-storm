@@ -75,6 +75,13 @@ public class HBaseKafkaTopology {
                 .withTupleToKafkaMapper(new FieldNameBasedTupleToKafkaMapper<>())
                 .withProducerProperties(props);
 
+        // Actually anonymous classes should not be used in Storm topologies, because
+        // they are not serializable in general. It is only by accident, that our
+        // example here works anyway.
+        //
+        // See
+        //  - https://stackoverflow.com/questions/17804704/notserializableexception-on-anonymous-class
+
         HBaseMapper hBaseMapper = new HBaseMapper() {
             private final Logger logger = LoggerFactory.getLogger(HBaseMapper.class);
 
